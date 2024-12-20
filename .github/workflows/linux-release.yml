@@ -1,11 +1,11 @@
-name: "Build for linux"
+name: "Build for linux x86_64"
 on:
   release:
     types: [created]
 
 jobs:
   release:
-    name: release linux
+    name: release linux x86_64
     runs-on: ubuntu-22.04
 
     steps:
@@ -20,9 +20,9 @@ jobs:
         shell: bash
         run: |
           cargo clean
-          cargo build --release
+          RUSTFLAGS='-C target-feature=+crt-static' cargo build --release --target x86_64-unknown-linux-gnu
 
-      - run: cp target/release/rusty-pullauta .
+      - run: cp target/x86_64-unknown-linux-gnu/release/pullauta .
 
       - name: 'Compress binaries'
         if: true
@@ -30,12 +30,12 @@ jobs:
         with:
           command: c
           files: |
-            rusty-pullauta
+            pullauta
             LICENSE
             README.md
             osm.txt
             fastighetskartan.txt
-          outPath: '${{ runner.temp }}/rusty-pullauta-x86_64-linux.tar.gz'
+          outPath: '${{ runner.temp }}/karttapullautin-x86_64-linux.tar.gz'
 
       - name: 'Release binaries'
         if: true
@@ -43,7 +43,7 @@ jobs:
         with:
           allowUpdates: true
           replacesArtifacts: true
-          artifacts: '${{ runner.temp }}/rusty-pullauta-x86_64-linux.tar.gz'
+          artifacts: '${{ runner.temp }}/karttapullautin-x86_64-linux.tar.gz'
           token: ${{ secrets.GITHUB_TOKEN }}
           artifactErrorsFailBuild: true
           prerelease: true

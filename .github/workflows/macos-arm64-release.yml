@@ -1,11 +1,11 @@
-name: "Build for macos"
+name: "Build for macos arm64"
 on:
   release:
     types: [created]
 
 jobs:
   release:
-    name: release macos
+    name: release macos arm64
     runs-on: macos-14
 
     steps:
@@ -22,7 +22,7 @@ jobs:
           cargo clean
           cargo build --release
 
-      - run: cp target/release/rusty-pullauta .
+      - run: cp target/release/pullauta .
 
       - name: 'Compress binaries'
         if: true
@@ -30,12 +30,12 @@ jobs:
         with:
           command: c
           files: |
-            rusty-pullauta
+            pullauta
             LICENSE
             README.md
             osm.txt
             fastighetskartan.txt
-          outPath: '${{ runner.temp }}/rusty-pullauta-arm64-macos.tar.gz'
+          outPath: '${{ runner.temp }}/karttapullautin-arm64-macos.tar.gz'
 
       - name: 'Release binaries'
         if: true
@@ -43,7 +43,7 @@ jobs:
         with:
           allowUpdates: true
           replacesArtifacts: true
-          artifacts: '${{ runner.temp }}/rusty-pullauta-arm64-macos.tar.gz'
+          artifacts: '${{ runner.temp }}/karttapullautin-arm64-macos.tar.gz'
           token: ${{ secrets.GITHUB_TOKEN }}
           artifactErrorsFailBuild: true
           prerelease: true

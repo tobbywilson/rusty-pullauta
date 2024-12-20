@@ -1,407 +1,202 @@
-use image::{GrayImage, Luma, Rgb, RgbImage, Rgba, RgbaImage};
-use imageproc::drawing::{draw_filled_circle_mut, draw_filled_rect_mut, draw_line_segment_mut};
-use imageproc::filter::median_filter;
-use imageproc::rect::Rect;
-use ini::Ini;
-use las::{raw::Header, Read, Reader};
-use rand::distributions;
-use rand::prelude::*;
-use regex::Regex;
-use rustc_hash::FxHashMap as HashMap;
-use shapefile::dbase::{FieldValue, Record};
-use shapefile::{Shape, ShapeType};
+use log::debug;
+use log::info;
+use pullauta::config::Config;
+use pullauta::io::fs::memory::MemoryFileSystem;
+use pullauta::io::fs::FileSystem;
 use std::env;
-use std::error::Error;
-use std::f32::consts::SQRT_2;
-use std::f64::consts::PI;
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufWriter, Write};
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::{thread, time};
 
-mod canvas;
-use canvas::Canvas;
-
 fn main() {
+    // setup and configure logging, default to INFO when RUST_LOG is not set
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format(|buf, record| {
+            use std::io::Write;
+            let ts = buf.timestamp_seconds();
+            let level_style = buf.default_level_style(record.level());
+
+            writeln!(
+                buf,
+                "[{} {:?} {level_style}{}{level_style:#} {}] {}",
+                ts,
+                std::thread::current().id(),
+                record.level(),
+                record.module_path().unwrap_or(""),
+                record.args()
+            )
+        })
+        .init();
+
     let mut thread: String = String::new();
-    if !Path::new("pullauta.ini").exists() {
-        let f =
-            File::create(Path::new(&"pullauta.ini".to_string())).expect("Unable to create file");
-        let mut f = BufWriter::new(f);
-        f.write_all("#------------------------------------------------------#
-# Parameters for the Karttapullautin pullautus process #
-#----------------------------------------------------- #
 
-################## PARAMETERS #############################
-# vegetation mode. New mode =0, old original (pre 20130613) mode =1
-# rusty-pullata does not support =1
-vegemode=0
+    let config =
+        Arc::new(Config::load_or_create_default().expect("Could not open or create config file"));
 
-### New vegetation mapping mode parameters (vegemode 0)##
-# Experimental undergrowth parameters. Smaller figures will give more undergrowth stripes
-# normal undergrowth 
-undergrowth=0.35
-
-# undergrowth walk
-undergrowth2=0.56
-
-# Note, you will need to iterate this if you use this mode. with commands 'pullauta makevegenew' and then 'pullauta' you can process only this part again. 
-# Elevation for hits below green. For green mapping hits below this will be calculated as points gone trough vegetation ~ ground.
-greenground=0.9
-greenhigh=2
-topweight=0.80
-vegezoffset=0
-greendetectsize=3
-
-### Here we calculate points. We can use elevation zones and factors for green. Example:
-# low|high|roof|factor
-# zone1=1|5|99|1  # points 1 to 5 meters will be calculates as one hit if tallest trees there as lower than 99 moters high 
-# zone2=5|9|11.0|0.75 # in additon, poitns 5 to 9 meters will be calculated as 0.75 point's worth if tallest trees are lower than 11 meters.
-# There can be as many zones as you like
-
-# low|high|roof|factor
-zone1=1.0|2.65|99|1
-zone2=2.65|3.4|99|0.1
-zone3=3.4|5.5|8|0.2
-
-
-## Here we fine how sensitively we get green for different (hight or low) forest types. 
-# For example tf tall forest with big trees gets too green compared to low forest, we can here tune it right. 
-# roof low|roof high| greenhits/ground ratio to trigger green factor 1
-thresold1=0.20|3|0.1
-thresold2=3|4|0.1  
-thresold3=4|7|0.1
-thresold4=7|20|0.1
-thresold5=20|99|0.1
-
-## areas where scanning lines overlap we have two or three times bigger point density. That may make those areas more or less green. Use these parameters to balance it. 
-# formula is:    * (1-pointvolumefactor * mydensity/averagedensity) ^ pointvolumeexponent
-# so pointvolumefactor = 0 gives no balancing/effect
-
-pointvolumefactor=0.1
-pointvolumeexponent=1 
-
-# green weighting if point is the only return - these are usually boulders or such 
-# so these are only partly counted
-firstandlastreturnfactor=1
-
-# green weighting for last return - these may be vegetation but less likely that earlier returns
-lastreturnfactor =1
-
-firstandlastreturnasground=3
-# green values for triggering green shades. Use high number like 99 to avoid some of the shades.
-#greenshades=0.0|0.1|0.2|0.3|0.4|0.5|0.6|0.7|0.8|0.9|1.0|1.1|1.2|1.3|1.4|1.5|1.6|1.7|1.8|1.9|2.0|2.1|2.2|2.3|2.4|2.5|2.6|2.7|2.8|2.9|3.0
-
-greenshades=0.2|0.35|0.5|0.7|1.3|2.6|4|99|99|99|99
-
-# tone for the lightest green. 255 is white.
-lightgreentone=200
-
-# dont change this now
-greendotsize=0
-
-# block size for calculating hits-below-green ratio. use 3 if  greendetectsize is smaller than 5, if 
-# it is bigger then use 1
-groundboxsize=1
-
-# green raster image filtering with median filter. Two rounds
-# use 1 to do no filtering.
-medianboxsize=9
-medianboxsize2=1
-
-## yellow parameters
-### hits below this will be calculated as yellow
-yellowheight=0.9  
-
-### how big part or the points must be below yellowheight to trigger yellow
-yellowthresold=0.9
-
-#############################################
-## cliff maker min height values for each cliff type. vertical drop per 1 meter horisontal distance
-##  cliff1 = these cliffs will be erased if steepness is bigger than steepness value below
-##  cliff2 = impassable cliff
-
-cliff1 = 1.15
-cliff2 = 2.0
-cliffthin=1
-
-cliffsteepfactor=0.38
-cliffflatplace=3.5
-cliffnosmallciffs=5.5
-
-cliffdebug=0
-## north lines rotation angle (clockwise) and width. Width 0 means no northlines.
-northlinesangle=0
-northlineswidth=0
-
-## Form line mode, options:
-# 0 = 2.5m interval, no formlines
-# 1 = 2.5m interval, every second contour thin/thick
-# 2 = 5m interval, with some dashed form lines in between if needed 
-
-formline=2
-
-# steepness parameter for form lines. Greater value gives more and smaller value gives less form lines. 
-formlinesteepness=0.37
-
-## additional lengt of form lines in vertex points
-formlineaddition=17
-
-## shortest gap in between form line ends in vertex points
-minimumgap = 30
-
-# dash and gap parameters for form lines
-dashlength = 60 
-gaplength =12
-
-# interval for index contours. Used only if form line mode is 0
-indexcontours=12.5
-
-# smoothing contrors. Bigger value smoothes contours more. Default =1. Try values about between 0.5 and 3.0
-smoothing = 0.7
-
-# curviness. How curvy contours show up. default=1. Bigger value makes more curvy/exaggerated curves (reentrants and spurs)
-curviness=1.1
-
-# knoll qualification. default =0.8. range 0.0 ... 1.0  Bigger values gives less but more distinct knolls.
-knolls=0.6
-
-# xyz factors, for feet to meter conversion etc
-coordxfactor=1
-coordyfactor=1
-coordzfactor=1
-
-# las/laz to xyz thinning factor. For example 0.25 leaves 25% of points
-thinfactor = 1
-
-# if water classified points, this class will be drawn with blue (uncomment to enable this)
-# waterclass=9
-
-# Water eleveation, elevation lower than this gets drawn with blue (uncomment to enable this)
-# waterelevation=0.15
-
-# if buildings classified, this class will be drawn with black (uncomment to enable this)
-# buildingsclass=6
-
-# building detection. 1=on, 0=off. These will be drawn as purple with black edges. Highly experimental.
-detectbuildings=0
-
-# batch process mode, process all laz ans las files of this directory
-# off=0, on=1  
-batch=0
-
-# processes
-processes=2
-
-# batch process output folder
-batchoutfolder=./out
-
-# batch process input file folder
-lazfolder=./in
-
-# If you can't get relative paths work, try absolute paths like c:/yourfolder/lasfiles
-
-# Karttapullautin can render vector shape files.
-# Maastotietokanta by National land survey of Finland does not need configuration file. For rendering those leave this parameter empty.
-# For other datasets like Fastighetskartan from Lantmateriet (Sweden) configuration file is needed.
-
-vectorconf=
-# vectorconf=osm.txt
-# vectorconf=fastighetskartan.txt
-
-# shape files should be in zip files and placed in batch input folder or zip 
-# should drag-dropped on pullauta.exe
-
-# maastotietokanta, do not render these levels, comma delimined
-mtkskiplayers=
-
-# uncomment this for no settlements color (skip these layers Pullautin usually draws with olive green)
-# mtkskiplayers=32000,40200,62100,32410,32411,32412,32413,32414,32415,32416,32417,32418
-
-# Color for vector buildings (RGB value 0,0,0 is black and 255,255,255 is white)
-buildingcolor=0,0,0
-
-# in bach mode, will we crop and copy also some temp files to output folder
-#  folder.  1=on 0 = off. use this if you want to use vector contors and such for each tile.
-    
-savetempfiles=0
-
-# in batch mode will we save the whole temp directory as it is
-savetempfolders=0
-            
-# the interval of additonal dxf contour layer (raw, for mapping). 0 = disabled. Value 1.125 gives such interval contours 
-basemapinterval=0 
-
-# Experimental parameters. Dont chance these unless you feel like experimenting
-scalefactor=1
-zoffset=0
-#skipknolldetection=0
-
-##############################################################################################################
-# Settings specific to rusty-pullauta, default values are meant to be fidel to original Perl Karttapullautin #
-##############################################################################################################
-# jarkkos2019, set to 0 to fix the obvious bugs of the Perl KarttaPullautin found in the source code of the 20190203 version, 1 reproduce the buggy behaviours
-jarkkos2019=1
-
-# contour_interval sets the contours interval in meters for the output map
-contour_interval=5
-
-# depression_length sets the maximum length of the depressions to be marked. Original from Perl version is hardcoded to 181.
-# set a very large number if all depressions should be marked. 
-depression_length=181
-
-# yellow_smoothing, set to 1 to apply a smoothing effect on the yellow areas matching the smoothing of the green areas
-yellow_smoothing=0
-
-# vege_bitmode, set to 1 to output a bit
-vege_bitmode=0
-
-# label_formlines_depressions, set to 1 to add a seperate label on the depressions in the formlines vector file
-label_formlines_depressions=0
-
-# vegeonly, set to 1 to only process the vegetation and skip the contour processing
-vegeonly=0
-".as_bytes()).expect("Cannot write file");
-    }
-
-    let conf = Ini::load_from_file("pullauta.ini").unwrap();
-
-    let int_re = Regex::new(r"^[1-9]\d*$").unwrap();
+    let fs = pullauta::io::fs::local::LocalFileSystem;
 
     let mut args: Vec<String> = env::args().collect();
 
     args.remove(0); // program name
 
-    if !args.is_empty() && int_re.is_match(&args[0]) {
+    if !args.is_empty() && args[0].trim().parse::<usize>().is_ok() {
         thread = args.remove(0);
     }
 
-    let mut command: String = String::new();
-    if !args.is_empty() {
-        command = args.remove(0);
-    }
+    let command = if !args.is_empty() {
+        args.remove(0)
+    } else {
+        String::new()
+    };
 
-    let accepted_files_re = Regex::new(r"\.(las|laz|xyz)$").unwrap();
-    if command.is_empty() || accepted_files_re.is_match(&command.to_lowercase()) {
-        println!("Rusty Karttapulatin...\nThere is no warranty. Use it at your own risk!\n");
-    }
+    let command_lowercase = command.to_lowercase();
 
-    let batch: bool = conf.general_section().get("batch").unwrap() == "1";
-
-    let tmpfolder = format!("temp{}", thread);
-    fs::create_dir_all(&tmpfolder).expect("Could not create tmp folder");
-    let pnorthlinesangle: f64 = conf
-        .general_section()
-        .get("northlinesangle")
-        .unwrap_or("0")
-        .parse::<f64>()
-        .unwrap_or(0.0);
-    let pnorthlineswidth: usize = conf
-        .general_section()
-        .get("northlineswidth")
-        .unwrap_or("0")
-        .parse::<usize>()
-        .unwrap_or(0);
-
-    if command.is_empty() && Path::new(&format!("{}/vegetation.png", tmpfolder)).exists() && !batch
+    if command.is_empty()
+        || command_lowercase.ends_with(".las")
+        || command_lowercase.ends_with(".laz")
+        || command_lowercase.ends_with(".xyz")
+        || command_lowercase.ends_with(".xyz.bin")
     {
-        println!("Rendering png map with depressions");
-        render(&thread, pnorthlinesangle, pnorthlineswidth, false).unwrap();
-        println!("Rendering png map without depressions");
-        render(&thread, pnorthlinesangle, pnorthlineswidth, true).unwrap();
-        println!("\nAll done!");
+        const VERSION: &str = env!("CARGO_PKG_VERSION");
+        println!(
+            "Karttapullautin v{}\nThere is no warranty. Use it at your own risk!\n",
+            VERSION
+        );
+    }
+
+    let batch: bool = config.batch;
+
+    let tmpfolder = PathBuf::from(format!("temp{}", thread));
+    fs::create_dir_all(&tmpfolder).expect("Could not create tmp folder");
+
+    let pnorthlinesangle = config.pnorthlinesangle;
+    let pnorthlineswidth = config.pnorthlineswidth;
+
+    if command.is_empty() && fs.exists(tmpfolder.join("vegetation.png")) && !batch {
+        info!("Rendering png map with depressions");
+        pullauta::render::render(
+            &fs,
+            &config,
+            &thread,
+            &tmpfolder,
+            pnorthlinesangle,
+            pnorthlineswidth,
+            false,
+        )
+        .unwrap();
+        info!("Rendering png map without depressions");
+        pullauta::render::render(
+            &fs,
+            &config,
+            &thread,
+            &tmpfolder,
+            pnorthlinesangle,
+            pnorthlineswidth,
+            true,
+        )
+        .unwrap();
+        info!("\nAll done!");
         return;
     }
 
     if command.is_empty() && !batch {
-        println!("USAGE:\nrusty-pullauta [parameter 1] [parameter 2] [parameter 3] ... [parameter n]\nSee readme.txt for more details");
+        println!("USAGE:\npullauta [parameter 1] [parameter 2] [parameter 3] ... [parameter n]\nSee README.MD for more details");
         return;
     }
 
     if command == "cliffgeneralize" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
         return;
     }
 
     if command == "ground" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
         return;
     }
 
     if command == "ground2" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
         return;
     }
 
     if command == "groundfix" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
         return;
     }
 
     if command == "profile" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
         return;
     }
 
     if command == "makecliffsold" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
         return;
     }
 
     if command == "makeheight" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
-        return;
-    }
-
-    if command == "makevege" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
         return;
     }
 
     if command == "xyzfixer" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
         return;
     }
 
     if command == "vege" {
-        println!("Not implemented in rusty-pullauta, use the perl version");
+        info!("Not implemented in this version, use the perl version");
+        return;
+    }
+
+    if command == "internal2xyz" {
+        if args.len() < 2 {
+            info!("USAGE: internal2xyz [input file] [output file]");
+            return;
+        }
+
+        let input = &args[0];
+        let output = &args[1];
+        pullauta::io::internal2xyz(&fs, input, output).unwrap();
         return;
     }
 
     if command == "blocks" {
-        blocks(&thread).unwrap();
+        pullauta::blocks::blocks(&fs, &tmpfolder).unwrap();
         return;
     }
 
     if command == "dotknolls" {
-        dotknolls(&thread).unwrap();
+        pullauta::knolls::dotknolls(&fs, &config, &tmpfolder).unwrap();
         return;
     }
 
     if command == "dxfmerge" || command == "merge" {
-        dxfmerge().unwrap();
+        pullauta::merge::dxfmerge(&fs, &config).unwrap();
         if command == "merge" {
             let mut scale = 1.0;
             if !args.is_empty() {
                 scale = args[0].parse::<f64>().unwrap();
             }
-            pngmergevege(scale).unwrap();
+            pullauta::merge::pngmergevege(&fs, &config, scale).unwrap();
         }
         return;
     }
 
     if command == "knolldetector" {
-        knolldetector(&thread).unwrap();
+        pullauta::knolls::knolldetector(&fs, &config, &tmpfolder).unwrap();
         return;
     }
 
     if command == "makecliffs" {
-        makecliffs(&thread).unwrap();
+        pullauta::cliffs::makecliffs(&fs, &config, &tmpfolder).unwrap();
         return;
     }
 
-    if command == "makevegenew" {
-        makevegenew(&thread).unwrap();
+    if command == "makevege" {
+        pullauta::vegetation::makevege(&fs, &config, &tmpfolder).unwrap();
     }
 
     if command == "pngmerge" || command == "pngmergedepr" {
@@ -409,7 +204,7 @@ vegeonly=0
         if !args.is_empty() {
             scale = args[0].parse::<f64>().unwrap();
         }
-        pngmerge(scale, command == "pngmergedepr").unwrap();
+        pullauta::merge::pngmerge(&fs, &config, scale, command == "pngmergedepr").unwrap();
         return;
     }
 
@@ -418,7 +213,7 @@ vegeonly=0
         if !args.is_empty() {
             scale = args[0].parse::<f64>().unwrap();
         }
-        pngmergevege(scale).unwrap();
+        pullauta::merge::pngmergevege(&fs, &config, scale).unwrap();
         return;
     }
 
@@ -429,7 +224,8 @@ vegeonly=0
         let miny = args[3].parse::<f64>().unwrap();
         let maxx = args[4].parse::<f64>().unwrap();
         let maxy = args[5].parse::<f64>().unwrap();
-        polylinedxfcrop(dxffilein, dxffileout, minx, miny, maxx, maxy).unwrap();
+        pullauta::crop::polylinedxfcrop(&fs, dxffilein, dxffileout, minx, miny, maxx, maxy)
+            .unwrap();
         return;
     }
 
@@ -440,24 +236,26 @@ vegeonly=0
         let miny = args[3].parse::<f64>().unwrap();
         let maxx = args[4].parse::<f64>().unwrap();
         let maxy = args[5].parse::<f64>().unwrap();
-        pointdxfcrop(dxffilein, dxffileout, minx, miny, maxx, maxy).unwrap();
+        pullauta::crop::pointdxfcrop(&fs, dxffilein, dxffileout, minx, miny, maxx, maxy).unwrap();
         return;
     }
 
     if command == "smoothjoin" {
-        smoothjoin(&thread).unwrap();
+        pullauta::merge::smoothjoin(&fs, &config, &tmpfolder).unwrap();
     }
 
     if command == "xyzknolls" {
-        xyzknolls(&thread).unwrap();
+        pullauta::knolls::xyzknolls(&fs, &config, &tmpfolder).unwrap();
     }
 
+    #[cfg(feature = "shapefile")]
     if command == "unzipmtk" {
-        unzipmtk(&thread, &args).unwrap();
+        pullauta::shapefile::unzip_and_render(&fs, &config, &tmpfolder, &args).unwrap();
     }
 
+    #[cfg(feature = "shapefile")]
     if command == "mtkshaperender" {
-        mtkshaperender(&thread).unwrap();
+        pullauta::shapefile::render(&fs, &config, &tmpfolder).unwrap();
     }
 
     if command == "xyz2contours" {
@@ -465,19 +263,14 @@ vegeonly=0
         let xyzfilein = args[1].clone();
         let xyzfileout = args[2].clone();
         let dxffile = args[3].clone();
-        let mut ground: bool = false;
-        if args.len() > 4 && args[4] == "ground" {
-            ground = true;
+        let hmap = pullauta::contours::xyz2heightmap(&fs, &config, &tmpfolder, &xyzfilein).unwrap();
+
+        if xyzfileout != "null" && !xyzfileout.is_empty() {
+            hmap.to_file(&fs, xyzfileout).unwrap();
         }
-        xyz2contours(
-            &thread,
-            cinterval,
-            &xyzfilein,
-            &xyzfileout,
-            &dxffile,
-            ground,
-        )
-        .unwrap();
+
+        pullauta::contours::heightmap2contours(&fs, &tmpfolder, cinterval, &hmap, &dxffile)
+            .unwrap();
         return;
     }
 
@@ -485,29 +278,65 @@ vegeonly=0
         let angle: f64 = args[0].parse::<f64>().unwrap();
         let nwidth: usize = args[1].parse::<usize>().unwrap();
         let nodepressions: bool = args.len() > 2 && args[2] == "nodepressions";
-        render(&thread, angle, nwidth, nodepressions).unwrap();
+        pullauta::render::render(
+            &fs,
+            &config,
+            &thread,
+            &tmpfolder,
+            angle,
+            nwidth,
+            nodepressions,
+        )
+        .unwrap();
         return;
     }
-
-    let proc: u64 = conf
-        .general_section()
-        .get("processes")
-        .unwrap()
-        .parse::<u64>()
-        .unwrap();
+    let proc = config.processes;
     if command.is_empty() && batch && proc > 1 {
-        let mut handles: Vec<thread::JoinHandle<()>> = Vec::with_capacity((proc + 1) as usize);
-        for i in 0..proc {
-            let handle = thread::spawn(move || {
-                println!("Starting thread {}", i + 1);
-                batch_process(&format!("{}", i + 1));
-                println!("Thread {} complete", i + 1);
-            });
-            thread::sleep(time::Duration::from_millis(100));
-            handles.push(handle);
+        // inner function to reduce code duplication
+        fn launch_threads<F: FileSystem + Send + Clone + 'static>(
+            fs: F,
+            proc: u64,
+            config: &Arc<Config>,
+        ) {
+            // do the processing
+            let mut handles: Vec<thread::JoinHandle<()>> = Vec::with_capacity((proc + 1) as usize);
+            for i in 0..proc {
+                let config = config.clone();
+                let fs = fs.clone();
+                let handle = thread::spawn(move || {
+                    info!("Starting thread");
+                    pullauta::process::batch_process(&config, &fs, &format!("{}", i + 1));
+                    info!("Thread complete");
+                });
+                thread::sleep(time::Duration::from_millis(100));
+                handles.push(handle);
+            }
+            for handle in handles {
+                handle.join().unwrap();
+            }
         }
-        for handle in handles {
-            handle.join().unwrap();
+
+        if config.experimental_use_in_memory_fs {
+            // copy all the input files into the memory file system
+            let fs = pullauta::io::fs::memory::MemoryFileSystem::new();
+            fs.create_dir_all(&config.lazfolder).unwrap();
+            for file in fs::read_dir(&config.lazfolder).unwrap() {
+                let file = file.unwrap();
+                let path = file.path();
+                println!("Copying {} into memory fs", path.display());
+                fs.load_from_disk(&path, &path).unwrap();
+            }
+
+            launch_threads(fs.clone(), proc, &config);
+
+            // copy the output files back to disk
+            std::fs::create_dir_all(&config.batchoutfolder).unwrap();
+            for path in fs.list(&config.batchoutfolder).unwrap() {
+                info!("Copying {} from memory fs to disk", path.display());
+                fs.save_to_disk(&path, &path).unwrap();
+            }
+        } else {
+            launch_threads(fs, proc, &config);
         }
         return;
     }
@@ -520,561 +349,66 @@ vegeonly=0
         if thread == "0" {
             thread = String::from("");
         }
-        batch_process(&thread)
+        pullauta::process::batch_process(&config, &fs, &thread)
     }
 
-    let zip_files_re = Regex::new(r"\.zip$").unwrap();
-    if zip_files_re.is_match(&command.to_lowercase()) {
+    if command_lowercase.ends_with(".zip") {
         let mut zips: Vec<String> = vec![command];
         zips.extend(args);
-        process_zip(&thread, &zips).unwrap();
+        pullauta::process::process_zip(&fs, &config, &thread, &tmpfolder, &zips).unwrap();
         return;
     }
 
-    if accepted_files_re.is_match(&command.to_lowercase()) {
+    if command_lowercase.ends_with(".las")
+        || command_lowercase.ends_with(".laz")
+        || command_lowercase.ends_with(".xyz")
+        || command_lowercase.ends_with(".xyz.bin")
+    {
         let mut norender: bool = false;
         if args.len() > 1 {
             norender = args[1].clone() == "norender";
         }
-        process_tile(&thread, &command, norender).unwrap();
-    }
-}
 
-fn dxfmerge() -> Result<(), Box<dyn Error>> {
-    let conf = Ini::load_from_file("pullauta.ini").unwrap();
-    let batchoutfolder = conf.general_section().get("batchoutfolder").unwrap_or("");
+        if config.experimental_use_in_memory_fs {
+            let fs = pullauta::io::fs::memory::MemoryFileSystem::new();
 
-    let mut dxf_files: Vec<PathBuf> = Vec::new();
-    for element in Path::new(batchoutfolder).read_dir().unwrap() {
-        let path = element.unwrap().path();
-        if let Some(extension) = path.extension() {
-            if extension == "dxf" {
-                dxf_files.push(path);
-            }
-        }
-    }
+            debug!("Copying input file into memory fs: {}", command);
+            // copy the input file into the memory file system
+            fs.load_from_disk(Path::new(&command), Path::new("input.laz"))
+                .expect("Could not copy input file into memory fs");
 
-    if dxf_files.is_empty() {
-        println!("No dxf files found in output directory");
-        return Ok(());
-    }
+            debug!("Done");
 
-    let out2_file = File::create("merged.dxf").expect("Unable to create file");
-    let mut out2 = BufWriter::new(out2_file);
-    let out_file = File::create("merged_contours.dxf").expect("Unable to create file");
-    let mut out = BufWriter::new(out_file);
+            pullauta::process::process_tile(
+                &fs,
+                &config,
+                &thread,
+                &tmpfolder,
+                // Path::new(&command),
+                Path::new("input.laz"),
+                norender,
+            )
+            .unwrap();
 
-    let mut headprinted = false;
-    let mut footer = String::new();
-    let mut headout = String::new();
-
-    for dx in dxf_files.iter() {
-        let dxf = dx.as_path().file_name().unwrap().to_str().unwrap();
-        let dxf_filename = format!("{}/{}", batchoutfolder, dxf);
-
-        if Path::new(&dxf_filename).exists() && dxf_filename.ends_with("contours.dxf") {
-            let input = Path::new(&dxf_filename);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            if data.contains("POLYLINE") {
-                let d: Vec<&str> = data.splitn(2, "POLYLINE").collect();
-                let head = d[0];
-                let body = d[1];
-                let d: Vec<&str> = body.splitn(2, "ENDSEC").collect();
-                let body = d[0];
-                footer = String::from(d[1]);
-
-                if !headprinted {
-                    headout = String::from(head);
-                    out.write_all(head.as_bytes())
-                        .expect("Could not write to file");
-                    out2.write_all(head.as_bytes())
-                        .expect("Could not write to file");
-                    headprinted = true;
-                }
-
-                out.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-
-                let plines: Vec<&str> = body.split("POLYLINE").collect();
-                for pl in plines.iter() {
-                    if !pl.contains("_intermed") {
-                        out2.write_all("POLYLINE".as_bytes())
-                            .expect("Could not write to file");
-                        out2.write_all(pl.as_bytes())
-                            .expect("Could not write to file");
-                    }
+            // now write the output files to disk
+            fn copy(fs: &MemoryFileSystem, name: &str) {
+                if fs.exists(name) {
+                    info!("Copying {} from memory fs to disk", name);
+                    fs.save_to_disk(name, name)
+                        .expect("Could not copy from memory fs to disk");
                 }
             }
-        }
-    }
-    write!(&mut out, "ENDSEC{}", &footer).expect("Could not write to file");
-
-    headprinted = false;
-
-    let out_file = File::create("merged_c2f.dxf").expect("Unable to create file");
-    let mut out = BufWriter::new(out_file);
-
-    for dx in dxf_files.iter() {
-        let dxf = dx.as_path().file_name().unwrap().to_str().unwrap();
-        let dxf_filename = format!("{}/{}", batchoutfolder, dxf);
-        if Path::new(&dxf_filename).exists() && dxf_filename.ends_with("_c2f.dxf") {
-            let input = Path::new(&dxf_filename);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            if data.contains("POLYLINE") {
-                let d: Vec<&str> = data.splitn(2, "POLYLINE").collect();
-                let body = d[1];
-                let d: Vec<&str> = body.splitn(2, "ENDSEC").collect();
-                let body = d[0];
-                footer = String::from(d[1]);
-
-                if !headprinted {
-                    out.write_all(headout.as_bytes())
-                        .expect("Could not write to file");
-                    headprinted = true;
-                }
-
-                out.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-
-                out2.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out2.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-            }
-        }
-    }
-    write!(&mut out, "ENDSEC{}", &footer).expect("Could not write to file");
-
-    headprinted = false;
-
-    let out_file = File::create("merged_c2.dxf").expect("Unable to create file");
-    let mut out = BufWriter::new(out_file);
-
-    for dx in dxf_files.iter() {
-        let dxf = dx.as_path().file_name().unwrap().to_str().unwrap();
-        let dxf_filename = format!("{}/{}", batchoutfolder, dxf);
-        if Path::new(&dxf_filename).exists() && dxf_filename.ends_with("_c2g.dxf") {
-            let input = Path::new(&dxf_filename);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            if data.contains("POLYLINE") {
-                let d: Vec<&str> = data.splitn(2, "POLYLINE").collect();
-                let body = d[1];
-                let d: Vec<&str> = body.splitn(2, "ENDSEC").collect();
-                let body = d[0];
-                footer = String::from(d[1]);
-
-                if !headprinted {
-                    out.write_all(headout.as_bytes())
-                        .expect("Could not write to file");
-                    headprinted = true;
-                }
-
-                out.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-
-                out2.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out2.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-            }
-        }
-    }
-
-    write!(&mut out, "ENDSEC{}", &footer).expect("Could not write to file");
-
-    headprinted = false;
-
-    let basemapcontours: f64 = conf
-        .general_section()
-        .get("basemapinterval")
-        .unwrap_or("0")
-        .parse::<f64>()
-        .unwrap_or(0.0);
-    if basemapcontours > 0.0 {
-        let out_file = File::create("merged_basemap.dxf").expect("Unable to create file");
-        let mut out = BufWriter::new(out_file);
-
-        for dx in dxf_files.iter() {
-            let dxf = dx.as_path().file_name().unwrap().to_str().unwrap();
-            let dxf_filename = format!("{}/{}", batchoutfolder, dxf);
-            if Path::new(&dxf_filename).exists() && dxf_filename.ends_with("_basemap.dxf") {
-                let input = Path::new(&dxf_filename);
-                let data = fs::read_to_string(input).expect("Can not read input file");
-                if data.contains("POLYLINE") {
-                    let d: Vec<&str> = data.splitn(2, "POLYLINE").collect();
-                    let body = d[1];
-                    let d: Vec<&str> = body.splitn(2, "ENDSEC").collect();
-                    let body = d[0];
-                    footer = String::from(d[1]);
-
-                    if !headprinted {
-                        out.write_all(headout.as_bytes())
-                            .expect("Could not write to file");
-                        headprinted = true;
-                    }
-
-                    out.write_all("POLYLINE".as_bytes())
-                        .expect("Could not write to file");
-                    out.write_all(body.as_bytes())
-                        .expect("Could not write to file");
-
-                    out2.write_all("POLYLINE".as_bytes())
-                        .expect("Could not write to file");
-                    out2.write_all(body.as_bytes())
-                        .expect("Could not write to file");
-                }
-            }
-        }
-        write!(&mut out, "ENDSEC{}", &footer).expect("Could not write to file");
-
-        headprinted = false;
-    }
-
-    let out_file = File::create("merged_c3.dxf").expect("Unable to create file");
-    let mut out = BufWriter::new(out_file);
-
-    for dx in dxf_files.iter() {
-        let dxf = dx.as_path().file_name().unwrap().to_str().unwrap();
-        let dxf_filename = format!("{}/{}", batchoutfolder, dxf);
-        if Path::new(&dxf_filename).exists() && dxf_filename.ends_with("_c3g.dxf") {
-            let input = Path::new(&dxf_filename);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            if data.contains("POLYLINE") {
-                let d: Vec<&str> = data.splitn(2, "POLYLINE").collect();
-                let body = d[1];
-                let d: Vec<&str> = body.splitn(2, "ENDSEC").collect();
-                let body = d[0];
-                footer = String::from(d[1]);
-
-                if !headprinted {
-                    out.write_all(headout.as_bytes())
-                        .expect("Could not write to file");
-                    headprinted = true;
-                }
-
-                out.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-
-                out2.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out2.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-            }
-        }
-    }
-    write!(&mut out, "ENDSEC{}", &footer).expect("Could not write to file");
-
-    headprinted = false;
-
-    let out_file = File::create("formlines.dxf").expect("Unable to create file");
-    let mut out = BufWriter::new(out_file);
-
-    for dx in dxf_files.iter() {
-        let dxf = dx.as_path().file_name().unwrap().to_str().unwrap();
-        let dxf_filename = format!("{}/{}", batchoutfolder, dxf);
-        if Path::new(&dxf_filename).exists() && dxf_filename.ends_with("_formlines.dxf") {
-            let input = Path::new(&dxf_filename);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            if data.contains("POLYLINE") {
-                let d: Vec<&str> = data.splitn(2, "POLYLINE").collect();
-                let body = d[1];
-                let d: Vec<&str> = body.splitn(2, "ENDSEC").collect();
-                let body = d[0];
-                footer = String::from(d[1]);
-
-                if !headprinted {
-                    out.write_all(headout.as_bytes())
-                        .expect("Could not write to file");
-                    headprinted = true;
-                }
-
-                out.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-
-                out2.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out2.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-            }
-        }
-    }
-    write!(&mut out, "ENDSEC{}", &footer).expect("Could not write to file");
-
-    headprinted = false;
-
-    let out_file = File::create("merged_dotknolls.dxf").expect("Unable to create file");
-    let mut out = BufWriter::new(out_file);
-
-    for dx in dxf_files.iter() {
-        let dxf = dx.as_path().file_name().unwrap().to_str().unwrap();
-        let dxf_filename = format!("{}/{}", batchoutfolder, dxf);
-        if Path::new(&dxf_filename).exists() && dxf_filename.ends_with("_dotknolls.dxf") {
-            let input = Path::new(&dxf_filename);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            if data.contains("POINT") {
-                let d: Vec<&str> = data.splitn(2, "POINT").collect();
-                let body = d[1];
-                let d: Vec<&str> = body.splitn(2, "ENDSEC").collect();
-                let body = d[0];
-                footer = String::from(d[1]);
-
-                if !headprinted {
-                    out.write_all(headout.as_bytes())
-                        .expect("Could not write to file");
-                    headprinted = true;
-                }
-
-                out.write_all("POINT".as_bytes())
-                    .expect("Could not write to file");
-                out.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-
-                out2.write_all("POINT".as_bytes())
-                    .expect("Could not write to file");
-                out2.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-            }
-        }
-    }
-    write!(&mut out, "ENDSEC{}", &footer).expect("Could not write to file");
-
-    headprinted = false;
-
-    let out_file = File::create("merged_detected.dxf").expect("Unable to create file");
-    let mut out = BufWriter::new(out_file);
-
-    for dx in dxf_files.iter() {
-        let dxf = dx.as_path().file_name().unwrap().to_str().unwrap();
-        let dxf_filename = format!("{}/{}", batchoutfolder, dxf);
-        if Path::new(&dxf_filename).exists() && dxf_filename.ends_with("_detected.dxf") {
-            let input = Path::new(&dxf_filename);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            if data.contains("POLYLINE") {
-                let d: Vec<&str> = data.splitn(2, "POLYLINE").collect();
-                let body = d[1];
-                let d: Vec<&str> = body.splitn(2, "ENDSEC").collect();
-                let body = d[0];
-                footer = String::from(d[1]);
-
-                if !headprinted {
-                    out.write_all(headout.as_bytes())
-                        .expect("Could not write to file");
-                    headprinted = true;
-                }
-
-                out.write_all("POLYLINE".as_bytes())
-                    .expect("Could not write to file");
-                out.write_all(body.as_bytes())
-                    .expect("Could not write to file");
-            }
-        }
-    }
-    write!(&mut out, "ENDSEC{}", &footer).expect("Could not write to file");
-    write!(&mut out2, "ENDSEC{}", &footer).expect("Could not write to file");
-
-    Ok(())
-}
-
-fn merge_png(png_files: Vec<PathBuf>, outfilename: &str, scale: f64) -> Result<(), Box<dyn Error>> {
-    let conf = Ini::load_from_file("pullauta.ini").unwrap();
-    let batchoutfolder = conf.general_section().get("batchoutfolder").unwrap_or("");
-
-    let mut xmin = f64::MAX;
-    let mut ymin = f64::MAX;
-    let mut xmax = f64::MIN;
-    let mut ymax = f64::MIN;
-    let mut res = f64::NAN;
-    for png in png_files.iter() {
-        let filename = png.as_path().file_name().unwrap().to_str().unwrap();
-        let full_filename = format!("{}/{}", batchoutfolder, filename);
-        let img = image::open(Path::new(&full_filename)).expect("Opening image failed");
-        let width = img.width() as f64;
-        let height = img.height() as f64;
-        let pgw = full_filename.replace(".png", ".pgw");
-        if Path::new(&pgw).exists() {
-            let input = Path::new(&pgw);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            let d: Vec<&str> = data.split('\n').collect();
-            let tfw0 = d[0].trim().parse::<f64>().unwrap();
-            let tfw4 = d[4].trim().parse::<f64>().unwrap();
-            let tfw5 = d[5].trim().parse::<f64>().unwrap();
-
-            if res.is_nan() {
-                res = tfw0;
-            }
-            if tfw4 < xmin {
-                xmin = tfw4;
-            }
-            if (tfw4 + width * res) > xmax {
-                xmax = tfw4 + width * res;
-            }
-            if tfw5 > ymax {
-                ymax = tfw5;
-            }
-            if (tfw5 - height * res) < ymin {
-                ymin = tfw5 - height * res;
-            }
-        }
-    }
-    let mut im = RgbImage::from_pixel(
-        ((xmax - xmin) / res / scale) as u32,
-        ((ymax - ymin) / res / scale) as u32,
-        Rgb([255, 255, 255]),
-    );
-    for png in png_files.iter() {
-        let filename = png.as_path().file_name().unwrap().to_str().unwrap();
-        let png = format!("{}/{}", batchoutfolder, filename);
-        let pgw = png.replace(".png", ".pgw");
-        let filesize = Path::new(&png).metadata().unwrap().len();
-        if Path::new(&png).exists() && Path::new(&pgw).exists() && filesize > 0 {
-            let img = image::open(Path::new(&png)).expect("Opening image failed");
-            let width = img.width() as f64;
-            let height = img.height() as f64;
-
-            let input = Path::new(&pgw);
-            let data = fs::read_to_string(input).expect("Can not read input file");
-            let d: Vec<&str> = data.split('\n').collect();
-            let tfw4 = d[4].trim().parse::<f64>().unwrap();
-            let tfw5 = d[5].trim().parse::<f64>().unwrap();
-
-            let img2 = image::imageops::thumbnail(
-                &img.to_rgb8(),
-                (width / scale + 0.5) as u32,
-                (height / scale + 0.5) as u32,
-            );
-            image::imageops::overlay(
-                &mut im,
-                &img2,
-                ((tfw4 - xmin) / res / scale) as i64,
-                ((-tfw5 + ymax) / res / scale) as i64,
-            );
-        }
-    }
-    im.save(Path::new(&format!("{}.jpg", outfilename)))
-        .expect("could not save output jpg");
-    im.save(Path::new(&format!("{}.png", outfilename)))
-        .expect("could not save output png");
-
-    let tfw_file = File::create(format!("{}.pgw", outfilename)).expect("Unable to create file");
-    let mut tfw_out = BufWriter::new(tfw_file);
-    write!(
-        &mut tfw_out,
-        "{}\r\n0\r\n0\r\n{}\r\n{}\r\n{}\r\n",
-        res * scale,
-        -res * scale,
-        xmin,
-        ymax
-    )
-    .expect("Could not write to file");
-    tfw_out.flush().expect("Cannot flush");
-    fs::copy(
-        Path::new(&format!("{}.pgw", outfilename)),
-        Path::new(&format!("{}.jgw", outfilename)),
-    )
-    .expect("Could not copy file");
-    Ok(())
-}
-
-fn pngmergevege(scale: f64) -> Result<(), Box<dyn Error>> {
-    let conf = Ini::load_from_file("pullauta.ini").unwrap();
-    let batchoutfolder = conf.general_section().get("batchoutfolder").unwrap_or("");
-
-    let mut png_files: Vec<PathBuf> = Vec::new();
-    for element in Path::new(batchoutfolder).read_dir().unwrap() {
-        let path = element.unwrap().path();
-        let filename = &path.as_path().file_name().unwrap().to_str().unwrap();
-        if filename.ends_with("_vege.png") {
-            png_files.push(path);
-        }
-    }
-    if png_files.is_empty() {
-        println!("No _vege.png files found in output directory");
-        return Ok(());
-    }
-    merge_png(png_files, "merged_vege", scale).unwrap();
-    Ok(())
-}
-
-fn pngmerge(scale: f64, depr: bool) -> Result<(), Box<dyn Error>> {
-    let conf = Ini::load_from_file("pullauta.ini").unwrap();
-    let batchoutfolder = conf.general_section().get("batchoutfolder").unwrap_or("");
-
-    let mut png_files: Vec<PathBuf> = Vec::new();
-    for element in Path::new(batchoutfolder).read_dir().unwrap() {
-        let path = element.unwrap().path();
-        let filename = &path.as_path().file_name().unwrap().to_str().unwrap();
-        if filename.ends_with(".png")
-            && !filename.ends_with("_undergrowth.png")
-            && !filename.ends_with("_undergrowth_bit.png")
-            && !filename.ends_with("_vege.png")
-            && !filename.ends_with("_vege_bit.png")
-            && ((depr && filename.ends_with("_depr.png"))
-                || (!depr && !filename.ends_with("_depr.png")))
-        {
-            png_files.push(path);
-        }
-    }
-
-    if png_files.is_empty() {
-        println!("No files to merge found in output directory");
-        return Ok(());
-    }
-    let mut outfilename = "merged";
-    if depr {
-        outfilename = "merged_depr";
-    }
-    merge_png(png_files, outfilename, scale).unwrap();
-    Ok(())
-}
-
-fn process_zip(thread: &String, filenames: &Vec<String>) -> Result<(), Box<dyn Error>> {
-    let conf = Ini::load_from_file("pullauta.ini").unwrap();
-    let pnorthlinesangle: f64 = conf
-        .general_section()
-        .get("northlinesangle")
-        .unwrap_or("0")
-        .parse::<f64>()
-        .unwrap_or(0.0);
-    let pnorthlineswidth: usize = conf
-        .general_section()
-        .get("northlineswidth")
-        .unwrap_or("0")
-        .parse::<usize>()
-        .unwrap_or(0);
-
-    println!("Rendering shape files");
-    unzipmtk(thread, filenames).unwrap();
-    println!("Rendering png map with depressions");
-    render(thread, pnorthlinesangle, pnorthlineswidth, false).unwrap();
-    println!("Rendering png map without depressions");
-    render(thread, pnorthlinesangle, pnorthlineswidth, true).unwrap();
-    Ok(())
-}
-
-fn unzipmtk(thread: &String, filenames: &Vec<String>) -> Result<(), Box<dyn Error>> {
-    if Path::new(&format!("temp{}/low.png", thread)).exists() {
-        fs::remove_file(format!("temp{}/low.png", thread)).unwrap();
-    }
-    if Path::new(&format!("temp{}/high.png", thread)).exists() {
-        fs::remove_file(format!("temp{}/high.png", thread)).unwrap();
-    }
-
-    for zip_name in filenames.iter() {
-        let fname = Path::new(&zip_name);
-        let file = fs::File::open(fname).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
-        archive
-            .extract(Path::new(&format!("temp{}/", thread)))
+            copy(&fs, "pullautus.png");
+            copy(&fs, "pullautus_depr.png");
+        } else {
+            pullauta::process::process_tile(
+                &fs,
+                &config,
+                &thread,
+                &tmpfolder,
+                Path::new(&command),
+                norender,
+            )
             .unwrap();
         mtkshaperender(thread).unwrap();
     }

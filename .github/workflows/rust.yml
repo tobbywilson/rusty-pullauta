@@ -6,6 +6,12 @@ on:
 
 name: "CI"
 
+env:
+  # always emit backtraces on crashes (to help debugging in tests)
+  RUST_BACKTRACE: 1
+  # cargo should always emit color
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
     name: Build
@@ -15,10 +21,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Check
-        run: cargo check --all-features
+        run: cargo check --all-features --all-targets
 
       - name: Build
         run: cargo build
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Unit Tests
+        run: cargo test
 
   lint:
     name: Lint (clippy)
@@ -29,10 +45,9 @@ jobs:
         with:
           components: clippy
 
-        # strict version that does not allow _any_ wclippy warnings to pass
-      # - run: cargo clippy -- -D warnings
-        # allows warnings to pass (but still not errors)
-      - run: cargo clippy
+      # strict version that does not allow _any_ clippy warnings to pass
+      # this prevents us from introducing potential issues.
+      - run: cargo clippy --all-features --all-targets -- -D warnings
 
   format:
     name: Format (rustfmt)
