@@ -70,7 +70,10 @@ pub fn makevege(
     let mut noyhit: HashMap<(u64, u64), u64> = HashMap::default();
 
     let mut i = 0;
-    let mut reader = XyzInternalReader::new(BufReader::new(fs.open(&xyz_file_in)?))?;
+    let mut reader = XyzInternalReader::new(BufReader::with_capacity(
+        crate::ONE_MEGABYTE,
+        fs.open(&xyz_file_in)?,
+    ))?;
     while let Some(r) = reader.next()? {
         if vegethin == 0 || ((i + 1) as u32) % vegethin == 0 {
             let x: f64 = r.x;
@@ -125,7 +128,10 @@ pub fn makevege(
     let step: f32 = 6.0;
 
     let mut i = 0;
-    let mut reader = XyzInternalReader::new(BufReader::new(fs.open(&xyz_file_in)?))?;
+    let mut reader = XyzInternalReader::new(BufReader::with_capacity(
+        crate::ONE_MEGABYTE,
+        fs.open(&xyz_file_in)?,
+    ))?;
     while let Some(r) = reader.next()? {
         if vegethin == 0 || ((i + 1) as u32) % vegethin == 0 {
             let x: f64 = r.x;
@@ -319,7 +325,7 @@ pub fn makevege(
                     draw_filled_rect_mut(
                         &mut imggr1,
                         Rect::at(
-                            ((x as f64 + 0.5) * block) as i32 - addition,
+                            ((x as f64 - 0.5) * block) as i32 - addition,
                             (((h - y as f64) - 0.5) * block) as i32 - addition,
                         )
                         .of_size(
@@ -336,20 +342,24 @@ pub fn makevege(
     let proceed_yellows: bool = config.proceed_yellows;
     let med: u32 = config.med;
     let med2 = config.med2;
+    let medyellow = config.medyellow;
 
     if med > 0 {
         imggr1 = median_filter(&imggr1, med / 2, med / 2);
-        if proceed_yellows {
-            imgye2 = median_filter(&imgye2, med / 2, med / 2);
-        }
     }
     if med2 > 0 {
         imggr1 = median_filter(&imggr1, med2 / 2, med2 / 2);
-        if proceed_yellows {
-            imgye2 = median_filter(&imgye2, med / 2, med / 2);
-        }
     }
-
+    if proceed_yellows {
+        if med > 0 {
+            imggr1 = median_filter(&imggr1, med / 2, med / 2);
+        }
+        if med2 > 0 {
+            imggr1 = median_filter(&imggr1, med2 / 2, med2 / 2);
+        }
+    } else if medyellow > 0 {
+        imgye2 = median_filter(&imgye2, medyellow / 2, medyellow / 2);
+    }
     imgye2
         .write_to(
             &mut BufWriter::new(
@@ -460,7 +470,10 @@ pub fn makevege(
     let buildings = config.buildings;
     let water = config.water;
     if buildings > 0 || water > 0 {
-        let mut reader = XyzInternalReader::new(BufReader::new(fs.open(&xyz_file_in)?))?;
+        let mut reader = XyzInternalReader::new(BufReader::with_capacity(
+            crate::ONE_MEGABYTE,
+            fs.open(&xyz_file_in)?,
+        ))?;
         while let Some(r) = reader.next()? {
             let (x, y) = (r.x, r.y);
             let c: u8 = r.classification;

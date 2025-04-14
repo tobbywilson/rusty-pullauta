@@ -1,6 +1,5 @@
 use image::{Rgb, RgbImage};
 use log::info;
-use rand::distributions;
 use rand::prelude::*;
 use std::borrow::Cow;
 use std::error::Error;
@@ -93,10 +92,13 @@ pub fn makecliffs(
 
     let xyz_file_in = tmpfolder.join("xyztemp.xyz.bin");
 
-    let mut rng = rand::thread_rng();
-    let randdist = distributions::Bernoulli::new(cliff_thin).unwrap();
+    let mut rng = rand::rng();
+    let randdist = rand::distr::Bernoulli::new(cliff_thin).unwrap();
 
-    let mut reader = XyzInternalReader::new(BufReader::new(fs.open(&xyz_file_in)?))?;
+    let mut reader = XyzInternalReader::new(BufReader::with_capacity(
+        crate::ONE_MEGABYTE,
+        fs.open(&xyz_file_in)?,
+    ))?;
     while let Some(r) = reader.next()? {
         if cliff_thin == 1.0 || rng.sample(randdist) {
             let (x, y, h) = (r.x, r.y, r.z);

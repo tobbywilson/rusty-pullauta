@@ -35,36 +35,37 @@ pub fn xyz2heightmap(
     let mut hmax: f64 = f64::MIN;
 
     let xyz_file_in = tmpfolder.join(xyzfilein);
-    let mut reader = XyzInternalReader::new(BufReader::new(fs.open(&xyz_file_in)?))?;
+    let mut reader = XyzInternalReader::new(BufReader::with_capacity(
+        crate::ONE_MEGABYTE,
+        fs.open(&xyz_file_in)?,
+    ))?;
     while let Some(r) = reader.next()? {
-        if r.classification == 2 || r.classification == water_class {
-            let x: f64 = r.x;
-            let y: f64 = r.y;
-            let h: f64 = r.z;
+        let x: f64 = r.x;
+        let y: f64 = r.y;
+        let h: f64 = r.z;
 
-            if xmin > x {
-                xmin = x;
-            }
+        if xmin > x {
+            xmin = x;
+        }
 
-            if xmax < x {
-                xmax = x;
-            }
+        if xmax < x {
+            xmax = x;
+        }
 
-            if ymin > y {
-                ymin = y;
-            }
+        if ymin > y {
+            ymin = y;
+        }
 
-            if ymax < y {
-                ymax = y;
-            }
+        if ymax < y {
+            ymax = y;
+        }
 
-            if hmin > h {
-                hmin = h;
-            }
+        if hmin > h {
+            hmin = h;
+        }
 
-            if hmax < h {
-                hmax = h;
-            }
+        if hmax < h {
+            hmax = h;
         }
     }
     drop(reader);
@@ -78,7 +79,10 @@ pub fn xyz2heightmap(
     // a two-dimensional vector of (sum, count) pairs for computing averages
     let mut list_alt = Vec2D::new(w + 2, h + 2, (0f64, 0usize));
 
-    let mut reader = XyzInternalReader::new(BufReader::new(fs.open(&xyz_file_in)?))?;
+    let mut reader = XyzInternalReader::new(BufReader::with_capacity(
+        crate::ONE_MEGABYTE,
+        fs.open(&xyz_file_in)?,
+    ))?;
     while let Some(r) = reader.next()? {
         if r.classification == 2 || r.classification == water_class {
             let x: f64 = r.x;
